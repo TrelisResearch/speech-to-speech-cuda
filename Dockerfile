@@ -8,8 +8,11 @@ WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
+RUN apt-get update
+RUN apt-get install -y portaudio19-dev
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install flash-attn --no-build-isolation
 RUN pip install hf_transfer
+
 
 COPY . .
