@@ -14,8 +14,7 @@ from arguments_classes.language_model_arguments import LanguageModelHandlerArgum
 from arguments_classes.mlx_language_model_arguments import MLXLanguageModelHandlerArguments
 from arguments_classes.module_arguments import ModuleArguments
 from arguments_classes.parler_tts_arguments import ParlerTTSHandlerArguments
-from arguments_classes.socket_receiver_arguments import SocketReceiverArguments
-from arguments_classes.socket_sender_arguments import SocketSenderArguments
+from arguments_classes.socket_arguments import SocketArguments
 from arguments_classes.vad_arguments import VADHandlerArguments
 from arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from baseHandler import BaseHandler
@@ -611,7 +610,7 @@ def main():
     parser = HfArgumentParser(
         (
             ModuleArguments,
-            SocketHandlerArguments,
+            SocketArguments,
             VADHandlerArguments,
             WhisperSTTHandlerArguments,
             LanguageModelHandlerArguments,
@@ -626,7 +625,7 @@ def main():
         # Parse configurations from a JSON file if specified
         (
             module_kwargs,
-            socket_handler_kwargs,
+            socket_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -638,7 +637,7 @@ def main():
         # Parse arguments from command line if no JSON file is provided
         (
             module_kwargs,
-            socket_handler_kwargs,
+            socket_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -733,9 +732,9 @@ def main():
         send_audio_chunks_queue,
         recv_audio_chunks_queue,
         should_listen,
-        host=socket_handler_kwargs.host,
-        port=socket_handler_kwargs.port,
-        chunk_size=socket_handler_kwargs.chunk_size,
+        host=socket_kwargs.host,
+        port=socket_kwargs.port,
+        chunk_size=socket_kwargs.chunk_size,
     )
 
     vad = VADHandler(
