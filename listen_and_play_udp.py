@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import sounddevice as sd
 from transformers import HfArgumentParser
 
-
 @dataclass
 class ListenAndPlayArguments:
     send_rate: int = field(default=16000, metadata={"help": "In Hz. Default is 16000."})
@@ -22,7 +21,7 @@ class ListenAndPlayArguments:
     )
     port: int = field(
         default=8082,
-        metadata={"help": "The network port for sending and receiving data. Default is 12345."},
+        metadata={"help": "The network port for sending and receiving data. Default is 8082."},
     )
 
 
@@ -33,8 +32,8 @@ def listen_and_play(
     host="localhost",
     port=8082,
 ):
-    socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    socket.bind((host, port))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((host, port))
 
     print(f"Recording and streaming on {host}:{port}...")
 
@@ -58,11 +57,11 @@ def listen_and_play(
     def send(stop_event, send_queue):
         while not stop_event.is_set():
             data = send_queue.get()
-            socket.sendto(data, (host, port))
+            sock.sendto(data, (host, port))
 
     def recv(stop_event, recv_queue):
         while not stop_event.is_set():
-            data, _ = socket.recvfrom(list_play_chunk_size * 2)
+            data, _ = sock.recvfrom(list_play_chunk_size * 2)
             if data:
                 recv_queue.put(data)
 
@@ -98,7 +97,7 @@ def listen_and_play(
         stop_event.set()
         recv_thread.join()
         send_thread.join()
-        socket.close()
+        sock.close()
         print("Connection closed.")
 
 
