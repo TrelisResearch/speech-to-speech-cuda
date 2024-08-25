@@ -32,11 +32,22 @@ def listen_and_play(
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (host, port)
 
-    print(f"Connecting to {host}:{port}")
+    print(f"Attempting to connect to {host}:{port}")
     
     # Send a hello message to the server
-    hello_message = b"Hello, server. This is the client!"
+    hello_message = b"Hello, server! This is the client!"
+    print("Sending hello message...")
     sock.sendto(hello_message, server_address)
+    
+    # Wait for a response with a timeout
+    sock.settimeout(5)  # 5 second timeout
+    try:
+        data, server = sock.recvfrom(1024)
+        print(f"Received response from server: {data.decode()}")
+    except socket.timeout:
+        print("No response from server after 5 seconds.")
+    
+    sock.settimeout(None)  # Reset timeout
 
     stop_event = threading.Event()
     recv_queue = Queue()
@@ -56,17 +67,22 @@ def listen_and_play(
 
     def send(stop_event, send_queue):
         while not stop_event.is_set():
-            data = send_queue.get()
-            sock.sendto(data, server_address)
+            if not send_queue.empty():
+                data = send_queue.get()
+                print(f"Sending {len(data)} bytes to server")
+                sock.sendto(data, server_address)
+            time.sleep(0.1)  # Small delay to prevent busy-waiting
 
     def recv(stop_event, recv_queue):
         while not stop_event.is_set():
             try:
                 data, _ = sock.recvfrom(chunk_size * 2)
                 if data:
+                    print(f"Received {len(data)} bytes from server")
                     recv_queue.put(data)
-            except socket.error:
-                pass
+            except socket.error as e:
+                print(f"Socket error: {e}")
+            time.sleep(0.1)  # Small delay to prevent busy-waiting
 
     try:
         send_stream = sd.RawInputStream(
