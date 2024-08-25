@@ -4,6 +4,7 @@ from queue import Queue
 from dataclasses import dataclass, field
 import sounddevice as sd
 from transformers import HfArgumentParser
+import time
 
 @dataclass
 class ListenAndPlayArguments:

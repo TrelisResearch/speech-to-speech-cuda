@@ -129,32 +129,37 @@ class SocketHandler:
         logger.info("Socket handler closed")
 
     def receive(self):
+        print(f"Starting to listen on {self.host}:{self.port}")
         while not self.stop_event.is_set():
             try:
+                print("Waiting to receive data...")
                 audio_chunk, addr = self.socket.recvfrom(self.chunk_size)
+                print(f"Received {len(audio_chunk)} bytes from {addr}")
                 if self.client_address is None:
                     self.client_address = addr
-                    logger.info(f"Received first message from client at {self.client_address}")
+                    print(f"New client connected from {self.client_address}")
+                    # Send a welcome message back to the client
+                    welcome_message = b"Welcome, client! Server received your message."
+                    self.socket.sendto(welcome_message, self.client_address)
                 if self.should_listen.is_set():
-                    if audio_chunk == b"Hello, server!":
-                        logger.info("Received hello message from client")
+                    if audio_chunk == b"Hello, server! This is the client!":
+                        print("Received hello message from client")
                     else:
                         self.queue_out.put(audio_chunk)
             except socket.error as e:
-                logger.error(f"Socket error during receive: {e}")
+                print(f"Socket error during receive: {e}")
                 break
 
     def send(self):
         while not self.stop_event.is_set():
-            audio_chunk = self.queue_in.get()
-            if self.client_address:
+            if not self.queue_in.empty() and self.client_address:
+                audio_chunk = self.queue_in.get()
                 try:
+                    print(f"Sending {len(audio_chunk)} bytes to {self.client_address}")
                     self.socket.sendto(audio_chunk, self.client_address)
-                    if isinstance(audio_chunk, bytes) and audio_chunk == b"END":
-                        break
                 except socket.error as e:
-                    logger.error(f"Socket error during send: {e}")
-                    break
+                    print(f"Socket error during send: {e}")
+            time.sleep(0.1)  # Small delay to prevent busy-waiting
 
 
 class VADHandler(BaseHandler):
