@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import sounddevice as sd
 from transformers import HfArgumentParser
 import time
+import struct
 
 @dataclass
 class ListenAndPlayArguments:
@@ -35,36 +36,9 @@ def listen_and_play(
 
     print(f"Attempting to connect to {host}:{port}")
     
-    # Send a hello message to the server
-    hello_message = b"Hello, server! This is the client!"
-    print("Sending hello message...")
-    sock.sendto(hello_message, server_address)
-    
-    # Wait for a response with a timeout
-    sock.settimeout(5)  # 5 second timeout
-    try:
-        data, server = sock.recvfrom(1024)
-        print(f"Received response from server: {data.decode()}")
-    except socket.timeout:
-        print("No response from server after 5 seconds.")
-    
-    sock.settimeout(None)  # Reset timeout
-
     stop_event = threading.Event()
     recv_queue = Queue()
     send_queue = Queue()
-
-    def callback_recv(outdata, frames, time, status):
-        if not recv_queue.empty():
-            data = recv_queue.get()
-            outdata[: len(data)] = data
-            outdata[len(data) :] = b"\x00" * (len(outdata) - len(data))
-        else:
-            outdata[:] = b"\x00" * len(outdata)
-
-    def callback_send(indata, frames, time, status):
-        data = bytes(indata)
-        send_queue.put(data)
 
     def send(stop_event, send_queue):
         while not stop_event.is_set():
@@ -72,6 +46,9 @@ def listen_and_play(
                 data = send_queue.get()
                 print(f"Sending {len(data)} bytes to server")
                 sock.sendto(data, server_address)
+            else:
+                # Send a heartbeat message
+                sock.sendto(b"HEARTBEAT", server_address)
             time.sleep(0.1)  # Small delay to prevent busy-waiting
 
     def recv(stop_event, recv_queue):
@@ -79,11 +56,26 @@ def listen_and_play(
             try:
                 data, _ = sock.recvfrom(chunk_size * 2)
                 if data:
-                    print(f"Received {len(data)} bytes from server")
-                    recv_queue.put(data)
+                    if data == b"END":
+                        print("Received end of audio stream")
+                    else:
+                        print(f"Received {len(data)} bytes from server")
+                        recv_queue.put(data)
             except socket.error as e:
                 print(f"Socket error: {e}")
-            time.sleep(0.1)  # Small delay to prevent busy-waiting
+            time.sleep(0.01)  # Small delay to prevent busy-waiting
+
+    def callback_recv(outdata, frames, time, status):
+        if not recv_queue.empty():
+            data = recv_queue.get()
+            outdata[:len(data)] = data
+            outdata[len(data):] = b"\x00" * (len(outdata) - len(data))
+        else:
+            outdata[:] = b"\x00" * len(outdata)
+
+    def callback_send(indata, frames, time, status):
+        data = bytes(indata)
+        send_queue.put(data)
 
     try:
         send_stream = sd.RawInputStream(
@@ -100,21 +92,30 @@ def listen_and_play(
             blocksize=chunk_size,
             callback=callback_recv,
         )
-        threading.Thread(target=send_stream.start).start()
-        threading.Thread(target=recv_stream.start).start()
-
+        
         send_thread = threading.Thread(target=send, args=(stop_event, send_queue))
-        send_thread.start()
         recv_thread = threading.Thread(target=recv, args=(stop_event, recv_queue))
+        
+        send_stream.start()
+        recv_stream.start()
+        send_thread.start()
         recv_thread.start()
+
+        print("Streams and threads started. Sending initial message...")
+        sock.sendto(b"Hello, server! This is the client!", server_address)
 
         input("Press Enter to stop...")
 
     except KeyboardInterrupt:
-        print("Finished streaming.")
+        print("Interrupted by user")
 
     finally:
+        print("Cleaning up...")
         stop_event.set()
+        if 'send_stream' in locals():
+            send_stream.stop()
+        if 'recv_stream' in locals():
+            recv_stream.stop()
         recv_thread.join()
         send_thread.join()
         sock.close()
