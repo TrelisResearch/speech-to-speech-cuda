@@ -134,9 +134,12 @@ class SocketHandler:
                 audio_chunk, addr = self.socket.recvfrom(self.chunk_size)
                 if self.client_address is None:
                     self.client_address = addr
-                    logger.info(f"Connected to client at {self.client_address}")
+                    logger.info(f"Received first message from client at {self.client_address}")
                 if self.should_listen.is_set():
-                    self.queue_out.put(audio_chunk)
+                    if audio_chunk == b"Hello, server!":
+                        logger.info("Received hello message from client")
+                    else:
+                        self.queue_out.put(audio_chunk)
             except socket.error as e:
                 logger.error(f"Socket error during receive: {e}")
                 break

@@ -1,19 +1,42 @@
 import socket
 import threading
 from queue import Queue
+from dataclasses import dataclass, field
 import sounddevice as sd
-import argparse
+from transformers import HfArgumentParser
+
+@dataclass
+class ListenAndPlayArguments:
+    send_rate: int = field(default=16000, metadata={"help": "In Hz. Default is 16000."})
+    recv_rate: int = field(default=44100, metadata={"help": "In Hz. Default is 44100."})
+    chunk_size: int = field(
+        default=1024,
+        metadata={"help": "The size of data chunks (in bytes). Default is 1024."},
+    )
+    host: str = field(
+        default="localhost",
+        metadata={"help": "The hostname or IP address of the server. Default is 'localhost'."},
+    )
+    port: int = field(
+        default=8082,
+        metadata={"help": "The network port for sending and receiving data. Default is 8082."},
+    )
 
 def listen_and_play(
     send_rate=16000,
     recv_rate=44100,
     chunk_size=1024,
-    remote_host="localhost",
-    remote_port=8082,
+    host="localhost",
+    port=8082,
 ):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_address = (host, port)
+
+    print(f"Connecting to {host}:{port}")
     
-    print(f"Connecting to {remote_host}:{remote_port}")
+    # Send a hello message to the server
+    hello_message = b"Hello, server. This is the client!"
+    sock.sendto(hello_message, server_address)
 
     stop_event = threading.Event()
     recv_queue = Queue()
@@ -34,7 +57,7 @@ def listen_and_play(
     def send(stop_event, send_queue):
         while not stop_event.is_set():
             data = send_queue.get()
-            sock.sendto(data, (remote_host, remote_port))
+            sock.sendto(data, server_address)
 
     def recv(stop_event, recv_queue):
         while not stop_event.is_set():
@@ -81,19 +104,6 @@ def listen_and_play(
         print("Connection closed.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Send and receive audio over UDP.")
-    parser.add_argument("--remote_host", required=True, help="Remote server IP")
-    parser.add_argument("--remote_port", type=int, required=True, help="Remote server port")
-    parser.add_argument("--send_rate", type=int, default=16000, help="Send rate in Hz")
-    parser.add_argument("--recv_rate", type=int, default=44100, help="Receive rate in Hz")
-    parser.add_argument("--chunk_size", type=int, default=1024, help="Chunk size in bytes")
-
-    args = parser.parse_args()
-
-    listen_and_play(
-        send_rate=args.send_rate,
-        recv_rate=args.recv_rate,
-        chunk_size=args.chunk_size,
-        remote_host=args.remote_host,
-        remote_port=args.remote_port
-    )
+    parser = HfArgumentParser((ListenAndPlayArguments,))
+    (listen_and_play_kwargs,) = parser.parse_args_into_dataclasses()
+    listen_and_play(**vars(listen_and_play_kwargs))
