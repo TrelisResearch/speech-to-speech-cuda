@@ -93,7 +93,7 @@ class SocketReceiver:
         queue_out,
         should_listen,
         host="0.0.0.0",
-        port=12345,
+        port=8082,
         chunk_size=1024,
     ):
         self.stop_event = stop_event
@@ -126,7 +126,7 @@ class SocketSender:
     Handles sending generated audio packets to the clients using UDP.
     """
 
-    def __init__(self, stop_event, queue_in, host="0.0.0.0", port=12346):
+    def __init__(self, stop_event, queue_in, host="0.0.0.0", port=8082):
         self.stop_event = stop_event
         self.queue_in = queue_in
         self.host = host
