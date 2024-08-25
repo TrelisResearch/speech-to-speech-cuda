@@ -20,13 +20,9 @@ class ListenAndPlayArguments:
             "help": "The hostname or IP address for listening and playing. Default is 'localhost'."
         },
     )
-    send_port: int = field(
-        default=12345,
-        metadata={"help": "The network port for sending data. Default is 12345."},
-    )
-    recv_port: int = field(
-        default=12346,
-        metadata={"help": "The network port for receiving data. Default is 12346."},
+    port: int = field(
+        default=8082,
+        metadata={"help": "The network port for sending and receiving data. Default is 12345."},
     )
 
 
@@ -35,14 +31,12 @@ def listen_and_play(
     recv_rate=44100,
     list_play_chunk_size=1024,
     host="localhost",
-    send_port=12345,
-    recv_port=12346,
+    port=8082,
 ):
-    send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    recv_socket.bind((host, recv_port))
+    socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    socket.bind((host, port))
 
-    print("Recording and streaming...")
+    print(f"Recording and streaming on {host}:{port}...")
 
     stop_event = threading.Event()
     recv_queue = Queue()
@@ -64,11 +58,11 @@ def listen_and_play(
     def send(stop_event, send_queue):
         while not stop_event.is_set():
             data = send_queue.get()
-            send_socket.sendto(data, (host, send_port))
+            socket.sendto(data, (host, port))
 
     def recv(stop_event, recv_queue):
         while not stop_event.is_set():
-            data, _ = recv_socket.recvfrom(list_play_chunk_size * 2)
+            data, _ = socket.recvfrom(list_play_chunk_size * 2)
             if data:
                 recv_queue.put(data)
 
@@ -104,8 +98,7 @@ def listen_and_play(
         stop_event.set()
         recv_thread.join()
         send_thread.join()
-        send_socket.close()
-        recv_socket.close()
+        socket.close()
         print("Connection closed.")
 
 

@@ -82,14 +82,15 @@ class ThreadManager:
             thread.join()
 
 
-class SocketReceiver:
+class SocketHandler:
     """
-    Handles reception of the audio packets from the client using UDP.
+    Handles both reception and sending of audio packets using UDP.
     """
 
     def __init__(
         self,
         stop_event,
+        queue_in,
         queue_out,
         should_listen,
         host="0.0.0.0",
@@ -97,63 +98,55 @@ class SocketReceiver:
         chunk_size=1024,
     ):
         self.stop_event = stop_event
+        self.queue_in = queue_in
         self.queue_out = queue_out
         self.should_listen = should_listen
         self.chunk_size = chunk_size
         self.host = host
         self.port = port
+        self.client_address = None
 
     def run(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((self.host, self.port))
-        logger.info("Receiver waiting for data...")
+        logger.info(f"Socket handler listening on {self.host}:{self.port}")
 
+        recv_thread = threading.Thread(target=self.receive)
+        send_thread = threading.Thread(target=self.send)
+
+        recv_thread.start()
+        send_thread.start()
+
+        recv_thread.join()
+        send_thread.join()
+
+        self.socket.close()
+        logger.info("Socket handler closed")
+
+    def receive(self):
         while not self.stop_event.is_set():
             try:
-                audio_chunk, _ = self.socket.recvfrom(self.chunk_size)
+                audio_chunk, addr = self.socket.recvfrom(self.chunk_size)
+                if self.client_address is None:
+                    self.client_address = addr
+                    logger.info(f"Connected to client at {self.client_address}")
                 if self.should_listen.is_set():
                     self.queue_out.put(audio_chunk)
             except socket.error as e:
-                logger.error(f"Socket error: {e}")
+                logger.error(f"Socket error during receive: {e}")
                 break
 
-        self.socket.close()
-        logger.info("Receiver closed")
-
-
-class SocketSender:
-    """
-    Handles sending generated audio packets to the clients using UDP.
-    """
-
-    def __init__(self, stop_event, queue_in, host="0.0.0.0", port=8082):
-        self.stop_event = stop_event
-        self.queue_in = queue_in
-        self.host = host
-        self.port = port
-
-    def run(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        logger.info("Sender ready to send data...")
-
-        client_address = None
+    def send(self):
         while not self.stop_event.is_set():
             audio_chunk = self.queue_in.get()
-            if client_address is None:
-                # Wait for the first packet from the client to get its address
-                _, client_address = self.socket.recvfrom(1024)
-                logger.info(f"Sender connected to client at {client_address}")
-
-            try:
-                self.socket.sendto(audio_chunk, client_address)
-                if isinstance(audio_chunk, bytes) and audio_chunk == b"END":
+            if self.client_address:
+                try:
+                    self.socket.sendto(audio_chunk, self.client_address)
+                    if isinstance(audio_chunk, bytes) and audio_chunk == b"END":
+                        break
+                except socket.error as e:
+                    logger.error(f"Socket error during send: {e}")
                     break
-            except socket.error as e:
-                logger.error(f"Socket error: {e}")
-                break
-
-        self.socket.close()
-        logger.info("Sender closed")
 
 
 class VADHandler(BaseHandler):
@@ -618,8 +611,7 @@ def main():
     parser = HfArgumentParser(
         (
             ModuleArguments,
-            SocketReceiverArguments,
-            SocketSenderArguments,
+            SocketHandlerArguments,
             VADHandlerArguments,
             WhisperSTTHandlerArguments,
             LanguageModelHandlerArguments,
@@ -634,8 +626,7 @@ def main():
         # Parse configurations from a JSON file if specified
         (
             module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
+            socket_handler_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -647,8 +638,7 @@ def main():
         # Parse arguments from command line if no JSON file is provided
         (
             module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
+            socket_handler_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -738,29 +728,15 @@ def main():
     text_prompt_queue = Queue()
     lm_response_queue = Queue()
 
-    if module_kwargs.mode == "local":
-        local_audio_streamer = LocalAudioStreamer(
-            input_queue=recv_audio_chunks_queue, output_queue=send_audio_chunks_queue
-        )
-        comms_handlers = [local_audio_streamer]
-        should_listen.set()
-    else:
-        comms_handlers = [
-            SocketReceiver(
-                stop_event,
-                recv_audio_chunks_queue,
-                should_listen,
-                host=socket_receiver_kwargs.recv_host,
-                port=socket_receiver_kwargs.recv_port,
-                chunk_size=socket_receiver_kwargs.chunk_size,
-            ),
-            SocketSender(
-                stop_event,
-                send_audio_chunks_queue,
-                host=socket_sender_kwargs.send_host,
-                port=socket_sender_kwargs.send_port,
-            ),
-        ]
+    socket_handler = SocketHandler(
+        stop_event,
+        send_audio_chunks_queue,
+        recv_audio_chunks_queue,
+        should_listen,
+        host=socket_handler_kwargs.host,
+        port=socket_handler_kwargs.port,
+        chunk_size=socket_handler_kwargs.chunk_size,
+    )
 
     vad = VADHandler(
         stop_event,
@@ -835,7 +811,7 @@ def main():
 
     # 4. Run the pipeline
     try:
-        pipeline_manager = ThreadManager([*comms_handlers, vad, stt, lm, tts])
+        pipeline_manager = ThreadManager([socket_handler, vad, stt, lm, tts])
         pipeline_manager.start()
 
     except KeyboardInterrupt:
