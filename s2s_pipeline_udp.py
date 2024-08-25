@@ -14,7 +14,6 @@ from arguments_classes.language_model_arguments import LanguageModelHandlerArgum
 from arguments_classes.mlx_language_model_arguments import MLXLanguageModelHandlerArguments
 from arguments_classes.module_arguments import ModuleArguments
 from arguments_classes.parler_tts_arguments import ParlerTTSHandlerArguments
-from arguments_classes.socket_arguments import SocketArguments
 from arguments_classes.vad_arguments import VADHandlerArguments
 from arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from baseHandler import BaseHandler
@@ -80,7 +79,14 @@ class ThreadManager:
         for thread in self.threads:
             thread.join()
 
+from dataclasses import dataclass, field
 
+@dataclass
+class SocketArguments:
+    host: str = field(default="0.0.0.0", metadata={"help": "The host to bind to"})
+    port: int = field(default=8082, metadata={"help": "The port to use for communication"})
+    chunk_size: int = field(default=1024, metadata={"help": "The size of audio chunks"})
+    
 class SocketHandler:
     """
     Handles both reception and sending of audio packets using UDP.
