@@ -1,4 +1,4 @@
-#   python listen_and_play.py --host <server_ip> --port 12345 --sample_rate 16000
+#      python listen_and_play_udp.py --host <server_ip> --port 8082 --sample_rate 16000
 import socket
 import threading
 from queue import Queue
@@ -21,15 +21,15 @@ class ListenAndPlayArguments:
         },
     )
     port: int = field(
-        default=12345,
-        metadata={"help": "The network port for UDP communication. Default is 12345."},
+        default=8082,
+        metadata={"help": "The network port for UDP communication. Default is 8082."},
     )
 
 def listen_and_play(
     sample_rate=16000,
     chunk_size=1024,
     host="localhost",
-    port=12345,
+    port=8082,
 ):
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind(('0.0.0.0', 0))  # Bind to any available port

@@ -1,10 +1,11 @@
-# This script is run with python s2s_pipeline.py --recv_host 0.0.0.0 --play_steps_s 0.5
+# This script is run with `python s2s_pipeline_udp.py --recv_host 0.0.0.0`
 
 import logging
 import os
 import socket
 import sys
 import threading
+import queue
 from copy import copy
 from pathlib import Path
 from queue import Queue
@@ -44,22 +45,15 @@ from utils import VADIterator, int2float, next_power_of_2
 
 # Ensure that the necessary NLTK resources are available
 try:
-    nltk.data.find("tokenizers/punkt_tab")
+    nltk.data.find("tokenizers/punkt")
 except (LookupError, OSError):
-    nltk.download("punkt_tab")
-try:
-    nltk.data.find("tokenizers/averaged_perceptron_tagger_eng")
-except (LookupError, OSError):
-    nltk.download("averaged_perceptron_tagger_eng")
+    nltk.download("punkt")
 
 # caching allows ~50% compilation time reduction
-# see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma
 CURRENT_DIR = Path(__file__).resolve().parent
 os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(CURRENT_DIR, "tmp")
 
-
 console = Console()
-
 
 class ThreadManager:
     """
@@ -82,10 +76,9 @@ class ThreadManager:
         for thread in self.threads:
             thread.join()
 
-
 class UDPHandler:
     """
-    Handles both sending and receiving of UDP packets.
+    Handles both sending and receiving of audio chunks.
     """
 
     def __init__(
@@ -94,8 +87,6 @@ class UDPHandler:
         recv_queue,
         send_queue,
         should_listen,
-        host="0.0.0.0",
-        port=12345,
         chunk_size=1024,
     ):
         self.stop_event = stop_event
@@ -103,16 +94,10 @@ class UDPHandler:
         self.send_queue = send_queue
         self.should_listen = should_listen
         self.chunk_size = chunk_size
-        self.host = host
-        self.port = port
 
     def run(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((self.host, self.port))
-        logger.info(f"UDP Handler listening on {self.host}:{self.port}")
-
-        recv_thread = threading.Thread(target=self.receive)
-        send_thread = threading.Thread(target=self.send)
+        recv_thread = Thread(target=self.receive)
+        send_thread = Thread(target=self.send)
 
         recv_thread.start()
         send_thread.start()
@@ -120,26 +105,28 @@ class UDPHandler:
         recv_thread.join()
         send_thread.join()
 
-        self.socket.close()
         logger.info("UDP Handler closed")
 
     def receive(self):
         while not self.stop_event.is_set():
             try:
-                data, addr = self.socket.recvfrom(self.chunk_size)
+                data = self.recv_queue.get(timeout=1)
                 if self.should_listen.is_set():
-                    self.recv_queue.put(data)
-            except socket.error:
+                    # Process the received data
+                    # This is where you'd handle the incoming audio chunks
+                    pass
+            except queue.Empty:
                 continue
 
     def send(self):
         while not self.stop_event.is_set():
             try:
                 audio_chunk = self.send_queue.get(timeout=1)
-                self.socket.sendto(audio_chunk, (self.host, self.port))
+                # Send the audio chunk
+                # This is where you'd handle sending the audio chunks
+                pass
             except queue.Empty:
                 continue
-
 
 class VADHandler(BaseHandler):
     """
@@ -439,7 +426,6 @@ class ParlerTTSHandler(BaseHandler):
             "A female speaker with a slightly low-pitched voice delivers her words quite expressively, in a very confined sounding environment with clear audio quality. "
             "She speaks very fast."
         ),
-        play_steps_s=1,
         blocksize=512,
     ):
         self.should_listen = should_listen
@@ -456,8 +442,6 @@ class ParlerTTSHandler(BaseHandler):
             model_name, torch_dtype=self.torch_dtype
         ).to(device)
 
-        framerate = self.model.audio_encoder.config.frame_rate
-        self.play_steps = int(framerate * play_steps_s)
         self.blocksize = blocksize
 
         if self.compile_mode not in (None, "default"):
@@ -558,7 +542,7 @@ class ParlerTTSHandler(BaseHandler):
         )
 
         streamer = ParlerTTSStreamer(
-            self.model, device=self.device, play_steps=self.play_steps
+            self.model, device=self.device
         )
         tts_gen_kwargs = {"streamer": streamer, **tts_gen_kwargs}
         torch.manual_seed(0)
@@ -603,225 +587,6 @@ def main():
     parser = HfArgumentParser(
         (
             ModuleArguments,
-            SocketReceiverArguments,
-            SocketSenderArguments,
-            VADHandlerArguments,
-            WhisperSTTHandlerArguments,
-            LanguageModelHandlerArguments,
-            MLXLanguageModelHandlerArguments,
-            ParlerTTSHandlerArguments,
-            MeloTTSHandlerArguments,
-        )
-    )
-    # 0. Parse CLI arguments
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # Parse configurations from a JSON file if specified
-        (
-            module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
-            vad_handler_kwargs,
-            whisper_stt_handler_kwargs,
-            language_model_handler_kwargs,
-            mlx_language_model_handler_kwargs,
-            parler_tts_handler_kwargs,
-            melo_tts_handler_kwargs,
-        ) = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        # Parse arguments from command line if no JSON file is provided
-        (
-            module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
-            vad_handler_kwargs,
-            whisper_stt_handler_kwargs,
-            language_model_handler_kwargs,
-            mlx_language_model_handler_kwargs,
-            parler_tts_handler_kwargs,
-            melo_tts_handler_kwargs,
-        ) = parser.parse_args_into_dataclasses()
-    # 1. Handle logger
-    global logger
-    logging.basicConfig(
-        level=module_kwargs.log_level.upper(),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    logger = logging.getLogger(__name__)
-    # torch compile logs
-    if module_kwargs.log_level == "debug":
-        torch._logging.set_logs(graph_breaks=True, recompiles=True, cudagraphs=True)
-
-    def optimal_mac_settings(mac_optimal_settings: Optional[str], *handler_kwargs):
-        if mac_optimal_settings:
-            for kwargs in handler_kwargs:
-                if hasattr(kwargs, "device"):
-                    kwargs.device = "mps"
-                if hasattr(kwargs, "mode"):
-                    kwargs.mode = "local"
-                if hasattr(kwargs, "stt"):
-                    kwargs.stt = "whisper-mlx"
-                if hasattr(kwargs, "llm"):
-                    kwargs.llm = "mlx-lm"
-                if hasattr(kwargs, "tts"):
-                    kwargs.tts = "melo"
-
-    optimal_mac_settings(
-        module_kwargs.local_mac_optimal_settings,
-        module_kwargs,
-    )
-    if platform == "darwin":
-        if module_kwargs.device == "cuda":
-            raise ValueError(
-                "Cannot use CUDA on macOS. Please set the device to 'cpu' or 'mps'."
-            )
-        if module_kwargs.llm != "mlx-lm":
-            logger.warning(
-                "For macOS users, it is recommended to use mlx-lm. You can activate it by passing --llm mlx-lm."
-            )
-        if module_kwargs.tts != "melo":
-            logger.warning(
-                "If you experiences issues generating the voice, considering setting the tts to melo."
-            )
-    # 2. Prepare each part's arguments
-    def overwrite_device_argument(common_device: Optional[str], *handler_kwargs):
-        if common_device:
-            for kwargs in handler_kwargs:
-                if hasattr(kwargs, "lm_device"):
-                    kwargs.lm_device = common_device
-                if hasattr(kwargs, "tts_device"):
-                    kwargs.tts_device = common_device
-                if hasattr(kwargs, "stt_device"):
-                    kwargs.stt_device = common_device
-
-    # Call this function with the common device and all the handlers
-    overwrite_device_argument(
-        module_kwargs.device,
-        language_model_handler_kwargs,
-        mlx_language_model_handler_kwargs,
-        parler_tts_handler_kwargs,
-        whisper_stt_handler_kwargs,
-    )
-    prepare_args(whisper_stt_handler_kwargs, "stt")
-    prepare_args(language_model_handler_kwargs, "lm")
-    prepare_args(mlx_language_model_handler_kwargs, "mlx_lm")
-    prepare_args(parler_tts_handler_kwargs, "tts")
-    prepare_args(melo_tts_handler_kwargs, "melo")
-    # 3. Build the pipeline
-    stop_event = Event()
-    # used to stop putting received audio chunks in queue until all setences have been processed by the TTS
-    should_listen = Event()
-    recv_audio_chunks_queue = Queue()
-    send_audio_chunks_queue = Queue()
-    spoken_prompt_queue = Queue()
-    text_prompt_queue = Queue()
-    lm_response_queue = Queue()
-    if module_kwargs.mode == "local":
-        local_audio_streamer = LocalAudioStreamer(
-            input_queue=recv_audio_chunks_queue, output_queue=send_audio_chunks_queue
-        )
-        comms_handlers = [local_audio_streamer]
-        should_listen.set()
-    else:
-        udp_handler = UDPHandler(
-            stop_event,
-            recv_audio_chunks_queue,
-            send_audio_chunks_queue,
-            should_listen,
-            host=socket_receiver_kwargs.recv_host,
-            port=socket_receiver_kwargs.recv_port,
-            chunk_size=socket_receiver_kwargs.chunk_size,
-        )
-        comms_handlers = [udp_handler]
-    vad = VADHandler(
-        stop_event,
-        queue_in=recv_audio_chunks_queue,
-        queue_out=spoken_prompt_queue,
-        setup_args=(should_listen,),
-        setup_kwargs=vars(vad_handler_kwargs),
-    )
-    if module_kwargs.stt == "whisper":
-        stt = WhisperSTTHandler(
-            stop_event,
-            queue_in=spoken_prompt_queue,
-            queue_out=text_prompt_queue,
-            setup_kwargs=vars(whisper_stt_handler_kwargs),
-        )
-    elif module_kwargs.stt == "whisper-mlx":
-        from STT.lightning_whisper_mlx_handler import LightningWhisperSTTHandler
-        stt = LightningWhisperSTTHandler(
-            stop_event,
-            queue_in=spoken_prompt_queue,
-            queue_out=text_prompt_queue,
-            setup_kwargs=vars(whisper_stt_handler_kwargs),
-        )
-    else:
-        raise ValueError("The STT should be either whisper or whisper-mlx")
-    if module_kwargs.llm == "transformers":
-        lm = LanguageModelHandler(
-            stop_event,
-            queue_in=text_prompt_queue,
-            queue_out=lm_response_queue,
-            setup_kwargs=vars(language_model_handler_kwargs),
-        )
-    elif module_kwargs.llm == "mlx-lm":
-        from LLM.mlx_lm import MLXLanguageModelHandler
-        lm = MLXLanguageModelHandler(
-            stop_event,
-            queue_in=text_prompt_queue,
-            queue_out=lm_response_queue,
-            setup_kwargs=vars(mlx_language_model_handler_kwargs),
-        )
-    else:
-        raise ValueError("The LLM should be either transformers or mlx-lm")
-    if module_kwargs.tts == "parler":
-        torch._inductor.config.fx_graph_cache = True
-        # mind about this parameter ! should be >= 2 * number of padded prompt sizes for TTS
-        torch._dynamo.config.cache_size_limit = 15
-        tts = ParlerTTSHandler(
-            stop_event,
-            queue_in=lm_response_queue,
-            queue_out=send_audio_chunks_queue,
-            setup_args=(should_listen,),
-            setup_kwargs=vars(parler_tts_handler_kwargs),
-        )
-    elif module_kwargs.tts == "melo":
-        try:
-            from TTS.melotts import MeloTTSHandler
-        except RuntimeError as e:
-            logger.error(
-                "Error importing MeloTTSHandler. You might need to run: python -m unidic download"
-            )
-            raise e
-        tts = MeloTTSHandler(
-            stop_event,
-            queue_in=lm_response_queue,
-            queue_out=send_audio_chunks_queue,
-            setup_args=(should_listen,),
-            setup_kwargs=vars(melo_tts_handler_kwargs),
-        )
-    else:
-        raise ValueError("The TTS should be either parler or melo")
-    # 4. Run the pipeline
-    try:
-        pipeline_manager = ThreadManager([*comms_handlers, vad, stt, lm, tts])
-        pipeline_manager.start()
-
-    except KeyboardInterrupt:
-        pipeline_manager.stop()
-
-
-if __name__ == "__main__":
-    main()
-
-# This script is run with python s2s_pipeline.py --recv_host 0.0.0.0 --play_steps_s 0.5
-
-
-def main():
-    parser = HfArgumentParser(
-        (
-            ModuleArguments,
-            SocketReceiverArguments,
-            SocketSenderArguments,
             VADHandlerArguments,
             WhisperSTTHandlerArguments,
             LanguageModelHandlerArguments,
@@ -836,8 +601,6 @@ def main():
         # Parse configurations from a JSON file if specified
         (
             module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -849,8 +612,6 @@ def main():
         # Parse arguments from command line if no JSON file is provided
         (
             module_kwargs,
-            socket_receiver_kwargs,
-            socket_sender_kwargs,
             vad_handler_kwargs,
             whisper_stt_handler_kwargs,
             language_model_handler_kwargs,
@@ -932,7 +693,6 @@ def main():
 
     # 3. Build the pipeline
     stop_event = Event()
-    # used to stop putting received audio chunks in queue until all setences have been processed by the TTS
     should_listen = Event()
     recv_audio_chunks_queue = Queue()
     send_audio_chunks_queue = Queue()
@@ -952,9 +712,7 @@ def main():
             recv_audio_chunks_queue,
             send_audio_chunks_queue,
             should_listen,
-            host=socket_receiver_kwargs.recv_host,
-            port=socket_receiver_kwargs.recv_port,
-            chunk_size=socket_receiver_kwargs.chunk_size,
+            chunk_size=1024,
         )
         comms_handlers = [udp_handler]
 
