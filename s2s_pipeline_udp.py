@@ -1,4 +1,4 @@
-# This script is run with `python s2s_pipeline_udp.py --recv_host 0.0.0.0`
+# This script is run with `python s2s_pipeline_udp.py`
 
 import logging
 import os
