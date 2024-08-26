@@ -20,6 +20,10 @@
   - [Generation parameters](#generation-parameters)
   - [Notable parameters](#notable-parameters)
 
+## UDP Scripts
+>[!IMPORTANT]
+>These scripts are not functioning. The standard scripts are recommended.
+
 ## Approach
 
 ### Structure
