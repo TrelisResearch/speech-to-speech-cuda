@@ -1,0 +1,948 @@
+You are an expert on python programming, in particular in connecting clients to servers with UDP or TCP protocols.As an example of a working approach for UDP communication, I will share with you a server and client script:
+
+<working example for UDP communication>
+<server code>
+import socket
+import sys
+import os
+from melo.api import TTS as MeloTTS
+import io
+import wave
+import struct
+import torch
+import torchaudio
+import re
+import melo.utilsclass TTS(MeloTTS):
+    def synthesize(self, text, speaker_id, output_path=None, sdp_ratio=0.2, noise_scale=0.6, noise_scale_w=0.8, speed=1.0, pbar=None, format=None, position=None, quiet=False):
+        language = self.language
+        texts = self.split_sentences_into_pieces(text, language, quiet)
+        audio_list = []
+        for t in texts:
+            if language in ['EN', 'ZH_MIX_EN']:
+                t = re.sub(r'([a-z])([A-Z])', r'\1 \2', t)
+            device = self.device
+            bert, ja_bert, phones, tones, lang_ids = melo.utils.get_text_for_tts_infer(t, language, self.hps, device, self.symbol_to_id)
+            with torch.no_grad():
+                x_tst = phones.to(device).unsqueeze(0)
+                tones = tones.to(device).unsqueeze(0)
+                lang_ids = lang_ids.to(device).unsqueeze(0)
+                bert = bert.to(device).unsqueeze(0)
+                ja_bert = ja_bert.to(device).unsqueeze(0)
+                x_tst_lengths = torch.LongTensor([phones.size(0)]).to(device)
+                del phones
+                speakers = torch.LongTensor([speaker_id]).to(device)
+                audio = self.model.infer(
+                    x_tst,
+                    x_tst_lengths,
+                    speakers,
+                    tones,
+                    lang_ids,
+                    bert,
+                    ja_bert,
+                    sdp_ratio=sdp_ratio,
+                    noise_scale=noise_scale,
+                    noise_scale_w=noise_scale_w,
+                    length_scale=1. / speed,
+                )[0][0, 0].data.cpu().float().numpy()
+                del x_tst, tones, lang_ids, bert, ja_bert, x_tst_lengths, speakers
+            audio_list.append(audio)
+        audio = self.audio_numpy_concat(audio_list, sr=self.hps.data.sampling_rate, speed=speed)
+        torch.cuda.empty_cache()
+        return (audio, self.hps.data.sampling_rate)    def close(self):
+        torch.cuda.empty_cache()def checkArg():
+    if len(sys.argv) != 2:
+        print("ERROR. Wrong number of arguments passed. System will exit. Next time please supply 1 argument!")
+        sys.exit()
+    else:
+        print("1 Argument exists. We can proceed further")def checkPort():
+    if int(sys.argv[1]) <= 5000:
+        print("Port number invalid. Port number should be greater than 5000. Next time enter valid port.")
+        sys.exit()
+    else:
+        print("Port number accepted!")def text_to_speech(text, tts_model, speaker_id=0):
+    audio, sr = tts_model.synthesize(text, speaker_id=speaker_id)
+    audio_tensor = torch.from_numpy(audio).unsqueeze(0)
+    buffer = io.BytesIO()
+    torchaudio.save(buffer, audio_tensor, sr, format="wav", bits_per_sample=16)
+    buffer.seek(0)
+    return buffer.read(), sr  # Return the audio data and sample ratedef send_audio(audio_data, client_address):
+    chunk_size = 1024
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i+chunk_size]
+        s.sendto(chunk, client_address)
+    s.sendto(b"END", client_address)host = ""
+checkArg()
+try:
+    port = int(sys.argv[1])
+except ValueError:
+    print("Error. Exiting. Please enter a valid port number.")
+    sys.exit()
+checkPort()try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    print("Server socket initialized")
+    s.bind((host, port))
+    print("Successful binding. Waiting for Client now.")
+except socket.error:
+    print("Failed to create socket")
+    sys.exit()# Initialize MeloTTS
+tts_model = TTS('EN')
+speaker_id = 0  # You may need to adjust this based on your MeloTTS modelwhile True:
+    try:
+        data, clientAddr = s.recvfrom(4096)
+    except ConnectionResetError:
+        print("Error. Port numbers not matching. Exiting. Next time enter same port numbers.")
+        sys.exit()    text = data.decode('utf8')
+    print(f"Received text: {text}")    if text.lower() == "exit":
+        print("Exiting server...")
+        s.close()
+        sys.exit()    audio_data, sample_rate = text_to_speech(text, tts_model, speaker_id)    # Send sample rate first
+    s.sendto(struct.pack('I', sample_rate), clientAddr)    send_audio(audio_data, clientAddr)
+    print("Audio sent to client")print("Program will end now.")
+s.close()
+tts_model.close()  # Clean up MeloTTS resources# This script is run with uv run -- python Serverudp.py 8082, where 8082 is the port to expose.
+</server code>
+
+<client code>
+import socket
+import sys
+import wave
+import time
+import struct
+import io
+
+def checkArg():
+    if len(sys.argv) != 3:
+        print("ERROR. Wrong number of arguments passed. System will exit. Next time please supply 2 arguments!")
+        sys.exit()
+    else:
+        print("2 Arguments exist. We can proceed further")
+
+def checkPort():
+    if int(sys.argv[2]) <= 5000:
+        print("Port number invalid. Port number should be greater than 5000. Next time enter valid port.")
+        sys.exit()
+    else:
+        print("Port number accepted!")
+
+checkArg()
+host = sys.argv[1]
+try:
+    port = int(sys.argv[2])
+except ValueError:
+    print("Error. Exiting. Please enter a valid port number.")
+    sys.exit()
+checkPort()
+
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    print("Client socket initialized")
+except socket.error:
+    print("Failed to create socket")
+    sys.exit()
+
+while True:
+    message = input("Enter text to convert to speech (or 'exit' to quit): ")
+    
+    start_time = time.time()
+    s.sendto(message.encode('utf-8'), (host, port))
+    
+    if message.lower() == "exit":
+        print("Exiting client...")
+        break
+    
+    print("Receiving audio data...")
+    
+    # Receive sample rate
+    sample_rate_data, _ = s.recvfrom(4)
+    sample_rate = struct.unpack('I', sample_rate_data)[0]
+    
+    audio_data = b""
+    while True:
+        chunk, _ = s.recvfrom(1024)
+        if chunk == b"END":
+            break
+        audio_data += chunk
+    
+    receive_time = time.time()
+    print(f"Time taken to receive audio data: {receive_time - start_time:.2f} seconds")
+    
+    print("Audio data received. Saving to file...")
+    with wave.open("output.wav", "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_data)
+    
+    save_time = time.time()
+    print(f"Time taken to save audio file: {save_time - receive_time:.2f} seconds")
+    print("Audio saved to 'output.wav'")
+    
+    total_time = save_time - start_time
+    print(f"Total time taken: {total_time:.2f} seconds")
+    print(f"Audio file size: {len(audio_data)} bytes")
+
+print("Program will end now.")
+s.close()
+</client code>
+
+</working example for UDP communication>Given the above example, I would like your help in converting the following server and client scripts from using TCP to UDP. <scripts to convert>
+<server - s2s_pipeline.ps>
+import logging
+import os
+import socket
+import sys
+import threading
+from copy import copy
+from pathlib import Path
+from queue import Queue
+from threading import Event, Thread
+from time import perf_counter
+from typing import Optional
+from sys import platform
+from arguments_classes.language_model_arguments import LanguageModelHandlerArguments
+from arguments_classes.mlx_language_model_arguments import MLXLanguageModelHandlerArguments
+from arguments_classes.module_arguments import ModuleArguments
+from arguments_classes.parler_tts_arguments import ParlerTTSHandlerArguments
+from arguments_classes.socket_receiver_arguments import SocketReceiverArguments
+from arguments_classes.socket_sender_arguments import SocketSenderArguments
+from arguments_classes.vad_arguments import VADHandlerArguments
+from arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
+from baseHandler import BaseHandler
+from arguments_classes.melo_tts_arguments import MeloTTSHandlerArguments
+import numpy as np
+import torch
+import nltk
+from nltk.tokenize import sent_tokenize
+from rich.console import Console
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForSpeechSeq2Seq,
+    AutoProcessor,
+    AutoTokenizer,
+    HfArgumentParser,
+    pipeline,
+    TextIteratorStreamer,
+)
+from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSStreamer
+import librosafrom local_audio_streamer import LocalAudioStreamer
+from utils import VADIterator, int2float, next_power_of_2# Ensure that the necessary NLTK resources are available
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except (LookupError, OSError):
+    nltk.download("punkt_tab")
+try:
+    nltk.data.find("tokenizers/averaged_perceptron_tagger_eng")
+except (LookupError, OSError):
+    nltk.download("averaged_perceptron_tagger_eng")# caching allows ~50% compilation time reduction
+# see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma
+CURRENT_DIR = Path(file).resolve().parent
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(CURRENT_DIR, "tmp")console = Console()class ThreadManager:
+    """
+    Manages multiple threads used to execute given handler tasks.
+    """    def init(self, handlers):
+        self.handlers = handlers
+        self.threads = []    def start(self):
+        for handler in self.handlers:
+            thread = threading.Thread(target=handler.run)
+            self.threads.append(thread)
+            thread.start()    def stop(self):
+        for handler in self.handlers:
+            handler.stop_event.set()
+        for thread in self.threads:
+            thread.join()class SocketReceiver:
+    """
+    Handles reception of the audio packets from the client.
+    """    def init(
+        self,
+        stop_event,
+        queue_out,
+        should_listen,
+        host="0.0.0.0",
+        port=12345,
+        chunk_size=1024,
+    ):
+        self.stop_event = stop_event
+        self.queue_out = queue_out
+        self.should_listen = should_listen
+        self.chunk_size = chunk_size
+        self.host = host
+        self.port = port    def receive_full_chunk(self, conn, chunk_size):
+        data = b""
+        while len(data) < chunk_size:
+            packet = conn.recv(chunk_size - len(data))
+            if not packet:
+                # connection closed
+                return None
+            data += packet
+        return data    def run(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SOREUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(1)
+        logger.info("Receiver waiting to be connected...")
+        self.conn,  = self.socket.accept()
+        logger.info("receiver connected")        self.should_listen.set()
+        while not self.stop_event.is_set():
+            audio_chunk = self.receive_full_chunk(self.conn, self.chunk_size)
+            if audio_chunk is None:
+                # connection closed
+                self.queue_out.put(b"END")
+                break
+            if self.should_listen.is_set():
+                self.queue_out.put(audio_chunk)
+        self.conn.close()
+        logger.info("Receiver closed")class SocketSender:
+    """
+    Handles sending generated audio packets to the clients.
+    """    def init(self, stop_event, queue_in, host="0.0.0.0", port=12346):
+        self.stop_event = stop_event
+        self.queue_in = queue_in
+        self.host = host
+        self.port = port    def run(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SOREUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(1)
+        logger.info("Sender waiting to be connected...")
+        self.conn,  = self.socket.accept()
+        logger.info("sender connected")        while not self.stop_event.is_set():
+            audio_chunk = self.queue_in.get()
+            self.conn.sendall(audio_chunk)
+            if isinstance(audio_chunk, bytes) and audio_chunk == b"END":
+                break
+        self.conn.close()
+        logger.info("Sender closed")class VADHandler(BaseHandler):
+    """
+    Handles voice activity detection. When voice activity is detected, audio will be accumulated until the end of speech is detected and then passed
+    to the following part.
+    """    def setup(
+        self,
+        should_listen,
+        thresh=0.3,
+        sample_rate=16000,
+        min_silence_ms=1000,
+        min_speech_ms=500,
+        max_speech_ms=float("inf"),
+        speech_pad_ms=30,
+    ):
+        self.should_listen = should_listen
+        self.sample_rate = sample_rate
+        self.min_silence_ms = min_silence_ms
+        self.min_speech_ms = min_speech_ms
+        self.max_speech_ms = max_speechms
+        self.model,  = torch.hub.load("snakers4/silero-vad", "silero_vad")
+        self.iterator = VADIterator(
+            self.model,
+            threshold=thresh,
+            sampling_rate=sample_rate,
+            min_silence_duration_ms=min_silence_ms,
+            speech_pad_ms=speech_pad_ms,
+        )    def process(self, audio_chunk):
+        audio_int16 = np.frombuffer(audio_chunk, dtype=np.int16)
+        audio_float32 = int2float(audio_int16)
+        vad_output = self.iterator(torch.from_numpy(audio_float32))
+        if vad_output is not None and len(vad_output) != 0:
+            logger.debug("VAD: end of speech detected")
+            array = torch.cat(vad_output).cpu().numpy()
+            duration_ms = len(array) / self.sample_rate * 1000
+            if duration_ms < self.min_speech_ms or duration_ms > self.max_speech_ms:
+                logger.debug(
+                    f"audio input of duration: {len(array) / self.sample_rate}s, skipping"
+                )
+            else:
+                self.should_listen.clear()
+                logger.debug("Stop listening")
+                yield arrayclass WhisperSTTHandler(BaseHandler):
+    """
+    Handles the Speech To Text generation using a Whisper model.
+    """    def setup(
+        self,
+        model_name="distil-whisper/distil-large-v3",
+        device="cuda",
+        torch_dtype="float16",
+        compile_mode=None,
+        gen_kwargs={},
+    ):
+        self.device = device
+        self.torch_dtype = getattr(torch, torch_dtype)
+        self.compile_mode = compile_mode
+        self.gen_kwargs = gen_kwargs        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_name,
+            torch_dtype=self.torch_dtype,
+        ).to(device)        # compile
+        if self.compile_mode:
+            self.model.generation_config.cache_implementation = "static"
+            self.model.forward = torch.compile(
+                self.model.forward, mode=self.compile_mode, fullgraph=True
+            )
+        self.warmup()    def prepare_model_inputs(self, spoken_prompt):
+        input_features = self.processor(
+            spoken_prompt, sampling_rate=16000, return_tensors="pt"
+        ).input_features
+        input_features = input_features.to(self.device, dtype=self.torch_dtype)        return input_features    def warmup(self):
+        logger.info(f"Warming up {self.class.name}")        # 2 warmup steps for no compile or compile mode with CUDA graphs capture
+        n_steps = 1 if self.compile_mode == "default" else 2
+        dummy_input = torch.randn(
+            (1, self.model.config.num_mel_bins, 3000),
+            dtype=self.torch_dtype,
+            device=self.device,
+        )
+        if self.compile_mode not in (None, "default"):
+            # generating more tokens than previously will trigger CUDA graphs capture
+            # one should warmup with a number of generated tokens above max tokens targeted for subsequent generation
+            warmup_gen_kwargs = {
+                "min_new_tokens": self.gen_kwargs["max_new_tokens"],
+                "max_new_tokens": self.gen_kwargs["max_new_tokens"],
+                **self.gen_kwargs,
+            }
+        else:
+            warmup_gen_kwargs = self.gen_kwargs        if self.device == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start_event.record()        for _ in range(nsteps):
+             = self.model.generate(dummy_input, **warmup_gen_kwargs)        if self.device == "cuda":
+            end_event.record()
+            torch.cuda.synchronize()            logger.info(
+                f"{self.class.name}:  warmed up! time: {start_event.elapsed_time(end_event) * 1e-3:.3f} s"
+            )    def process(self, spoken_prompt):
+        logger.debug("infering whisper...")        global pipeline_start
+        pipeline_start = perf_counter()        input_features = self.prepare_model_inputs(spoken_prompt)
+        pred_ids = self.model.generate(input_features, **self.gen_kwargs)
+        pred_text = self.processor.batch_decode(
+            pred_ids, skip_special_tokens=True, decode_with_timestamps=False
+        )[0]        logger.debug("finished whisper inference")
+        console.print(f"[yellow]USER: {pred_text}")        yield pred_textclass Chat:
+    """
+    Handles the chat using to avoid OOM issues.
+    """    def init(self, size):
+        self.size = size
+        self.init_chat_message = None
+        # maxlen is necessary pair, since a each new step we add an prompt and assitant answer
+        self.buffer = []    def append(self, item):
+        self.buffer.append(item)
+        if len(self.buffer) == 2 * (self.size + 1):
+            self.buffer.pop(0)
+            self.buffer.pop(0)    def init_chat(self, init_chat_message):
+        self.init_chat_message = init_chat_message    def to_list(self):
+        if self.init_chat_message:
+            return [self.init_chat_message] + self.buffer
+        else:
+            return self.bufferclass LanguageModelHandler(BaseHandler):
+    """
+    Handles the language model part.
+    """    def setup(
+        self,
+        model_name="microsoft/Phi-3-mini-4k-instruct",
+        device="cuda",
+        torch_dtype="float16",
+        gen_kwargs={},
+        user_role="user",
+        chat_size=1,
+        init_chat_role=None,
+        init_chat_prompt="You are a helpful AI assistant.",
+    ):
+        self.device = device
+        self.torch_dtype = getattr(torch, torch_dtype)        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch_dtype, trust_remote_code=True
+        ).to(device)
+        self.pipe = pipeline(
+            "text-generation", model=self.model, tokenizer=self.tokenizer, device=device
+        )
+        self.streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True,
+        )
+        self.gen_kwargs = {
+            "streamer": self.streamer,
+            "return_full_text": False,
+            **gen_kwargs,
+        }        self.chat = Chat(chat_size)
+        if init_chat_role:
+            if not init_chat_prompt:
+                raise ValueError(
+                    "An initial promt needs to be specified when setting init_chat_role."
+                )
+            self.chat.init_chat({"role": init_chat_role, "content": init_chat_prompt})
+        self.user_role = user_role        self.warmup()    def warmup(self):
+        logger.info(f"Warming up {self.class.name}")        dummy_input_text = "Write me a poem about Machine Learning."
+        dummy_chat = [{"role": self.user_role, "content": dummy_input_text}]
+        warmup_gen_kwargs = {
+            "min_new_tokens": self.gen_kwargs["max_new_tokens"],
+            "max_new_tokens": self.gen_kwargs["max_new_tokens"],
+            **self.gen_kwargs,
+        }        n_steps = 2        if self.device == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start_event.record()        for _ in range(n_steps):
+            thread = Thread(
+                target=self.pipe, args=(dummy_chat,), kwargs=warmup_genkwargs
+            )
+            thread.start()
+            for  in self.streamer:
+                pass        if self.device == "cuda":
+            end_event.record()
+            torch.cuda.synchronize()            logger.info(
+                f"{self.class.name}:  warmed up! time: {start_event.elapsed_time(end_event) * 1e-3:.3f} s"
+            )    def process(self, prompt):
+        logger.debug("infering language model...")        self.chat.append({"role": self.user_role, "content": prompt})
+        thread = Thread(
+            target=self.pipe, args=(self.chat.to_list(),), kwargs=self.gen_kwargs
+        )
+        thread.start()
+        if self.device == "mps":
+            generated_text = ""
+            for new_text in self.streamer:
+                generated_text += new_text
+            printable_text = generated_text
+            torch.mps.empty_cache()
+        else:
+            generated_text, printable_text = "", ""
+            for new_text in self.streamer:
+                generated_text += new_text
+                printable_text += new_text
+                sentences = sent_tokenize(printable_text)
+                if len(sentences) > 1:
+                    yield (sentences[0])
+                    printable_text = new_text        self.chat.append({"role": "assistant", "content": generated_text})        # don't forget last sentence
+        yield printable_textclass ParlerTTSHandler(BaseHandler):
+    def setup(
+        self,
+        should_listen,
+        model_name="ylacombe/parler-tts-mini-jenny-30H",
+        device="cuda",
+        torch_dtype="float16",
+        compile_mode=None,
+        gen_kwargs={},
+        max_prompt_pad_length=8,
+        description=(
+            "A female speaker with a slightly low-pitched voice delivers her words quite expressively, in a very confined sounding environment with clear audio quality. "
+            "She speaks very fast."
+        ),
+        play_steps_s=1,
+        blocksize=512,
+    ):
+        self.should_listen = should_listen
+        self.device = device
+        self.torch_dtype = getattr(torch, torch_dtype)
+        self.gen_kwargs = gen_kwargs
+        self.compile_mode = compile_mode
+        self.max_prompt_pad_length = max_prompt_pad_length
+        self.description = description        self.description_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.prompt_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = ParlerTTSForConditionalGeneration.from_pretrained(
+            model_name, torch_dtype=self.torch_dtype
+        ).to(device)        framerate = self.model.audio_encoder.config.frame_rate
+        self.play_steps = int(framerate * play_steps_s)
+        self.blocksize = blocksize        if self.compile_mode not in (None, "default"):
+            logger.warning(
+                "Torch compilation modes that captures CUDA graphs are not yet compatible with the STT part. Reverting to 'default'"
+            )
+            self.compile_mode = "default"        if self.compile_mode:
+            self.model.generation_config.cache_implementation = "static"
+            self.model.forward = torch.compile(
+                self.model.forward, mode=self.compile_mode, fullgraph=True
+            )        self.warmup()    def prepare_model_inputs(
+        self,
+        prompt,
+        max_length_prompt=50,
+        pad=False,
+    ):
+        pad_args_prompt = (
+            {"padding": "max_length", "max_length": max_length_prompt} if pad else {}
+        )        tokenized_description = self.description_tokenizer(
+            self.description, return_tensors="pt"
+        )
+        input_ids = tokenized_description.input_ids.to(self.device)
+        attention_mask = tokenized_description.attention_mask.to(self.device)        tokenized_prompt = self.prompt_tokenizer(
+            prompt, return_tensors="pt", **pad_args_prompt
+        )
+        prompt_input_ids = tokenized_prompt.input_ids.to(self.device)
+        prompt_attention_mask = tokenized_prompt.attention_mask.to(self.device)        gen_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "prompt_input_ids": prompt_input_ids,
+            "prompt_attention_mask": prompt_attention_mask,
+            **self.gen_kwargs,
+        }        return gen_kwargs    def warmup(self):
+        logger.info(f"Warming up {self.class.name}")        if self.device == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)        # 2 warmup steps for no compile or compile mode with CUDA graphs capture
+        n_steps = 1 if self.compile_mode == "default" else 2        if self.device == "cuda":
+            torch.cuda.synchronize()
+            start_event.record()
+        if self.compile_mode:
+            pad_lengths = [2i for i in range(2, self.max_prompt_pad_length)]
+            for pad_length in pad_lengths[::-1]:
+                model_kwargs = self.prepare_model_inputs(
+                    "dummy prompt", max_length_prompt=padlength, pad=True
+                )
+                for  in range(nsteps):
+                     = self.model.generate(model_kwargs)
+                logger.info(f"Warmed up length {pad_length} tokens!")
+        else:
+            model_kwargs = self.prepare_modelinputs("dummy prompt")
+            for  in range(nsteps):
+                 = self.model.generate(**model_kwargs)        if self.device == "cuda":
+            end_event.record()
+            torch.cuda.synchronize()
+            logger.info(
+                f"{self.class.name}:  warmed up! time: {start_event.elapsed_time(end_event) * 1e-3:.3f} s"
+            )    def process(self, llm_sentence):
+        console.print(f"[green]ASSISTANT: {llm_sentence}")
+        nb_tokens = len(self.prompt_tokenizer(llm_sentence).input_ids)        pad_args = {}
+        if self.compile_mode:
+            # pad to closest upper power of two
+            pad_length = next_power_of_2(nb_tokens)
+            logger.debug(f"padding to {pad_length}")
+            pad_args["pad"] = True
+            pad_args["max_length_prompt"] = pad_length        tts_gen_kwargs = self.prepare_model_inputs(
+            llm_sentence,
+            **pad_args,
+        )        streamer = ParlerTTSStreamer(
+            self.model, device=self.device, play_steps=self.play_steps
+        )
+        tts_gen_kwargs = {"streamer": streamer, **tts_gen_kwargs}
+        torch.manual_seed(0)
+        thread = Thread(target=self.model.generate, kwargs=tts_gen_kwargs)
+        thread.start()        for i, audio_chunk in enumerate(streamer):
+            if i == 0 and "pipeline_start" in globals():
+                logger.info(
+                    f"Time to first audio: {perf_counter() - pipeline_start:.3f}"
+                )
+            audio_chunk = librosa.resample(audio_chunk, orig_sr=44100, target_sr=16000)
+            audio_chunk = (audio_chunk * 32768).astype(np.int16)
+            for i in range(0, len(audio_chunk), self.blocksize):
+                yield np.pad(
+                    audio_chunk[i : i + self.blocksize],
+                    (0, self.blocksize - len(audio_chunk[i : i + self.blocksize])),
+                )        self.should_listen.set()def prepare_args(args, prefix):
+    """
+    Rename arguments by removing the prefix and prepares the gen_kwargs.
+    """    gen_kwargs = {}
+    for key in copy(args.dict):
+        if key.startswith(prefix):
+            value = args.dict.pop(key)
+            new_key = key[len(prefix) + 1 :]  # Remove prefix and underscore
+            if newkey.startswith("gen"):
+                gen_kwargs[newkey[4:]] = value  # Remove 'gen' and add to dict
+            else:
+                args.dict[new_key] = value    args.dict["gen_kwargs"] = gen_kwargsdef main():
+    parser = HfArgumentParser(
+        (
+            ModuleArguments,
+            SocketReceiverArguments,
+            SocketSenderArguments,
+            VADHandlerArguments,
+            WhisperSTTHandlerArguments,
+            LanguageModelHandlerArguments,
+            MLXLanguageModelHandlerArguments,
+            ParlerTTSHandlerArguments,
+            MeloTTSHandlerArguments,
+        )
+    )    # 0. Parse CLI arguments
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        # Parse configurations from a JSON file if specified
+        (
+            module_kwargs,
+            socket_receiver_kwargs,
+            socket_sender_kwargs,
+            vad_handler_kwargs,
+            whisper_stt_handler_kwargs,
+            language_model_handler_kwargs,
+            mlx_language_model_handler_kwargs,
+            parler_tts_handler_kwargs,
+            melo_tts_handler_kwargs,
+        ) = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+    else:
+        # Parse arguments from command line if no JSON file is provided
+        (
+            module_kwargs,
+            socket_receiver_kwargs,
+            socket_sender_kwargs,
+            vad_handler_kwargs,
+            whisper_stt_handler_kwargs,
+            language_model_handler_kwargs,
+            mlx_language_model_handler_kwargs,
+            parler_tts_handler_kwargs,
+            melo_tts_handler_kwargs,
+        ) = parser.parse_args_into_dataclasses()    # 1. Handle logger
+    global logger
+    logging.basicConfig(
+        level=module_kwargs.log_level.upper(),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logger = logging.getLogger(name)    # torch compile logs
+    if module_kwargs.log_level == "debug":
+        torch._logging.set_logs(graph_breaks=True, recompiles=True, cudagraphs=True)    def optimal_mac_settings(mac_optimal_settings: Optional[str], *handler_kwargs):
+        if mac_optimal_settings:
+            for kwargs in handler_kwargs:
+                if hasattr(kwargs, "device"):
+                    kwargs.device = "mps"
+                if hasattr(kwargs, "mode"):
+                    kwargs.mode = "local"
+                if hasattr(kwargs, "stt"):
+                    kwargs.stt = "whisper-mlx"
+                if hasattr(kwargs, "llm"):
+                    kwargs.llm = "mlx-lm"
+                if hasattr(kwargs, "tts"):
+                    kwargs.tts = "melo"    optimal_mac_settings(
+        module_kwargs.local_mac_optimal_settings,
+        module_kwargs,
+    )    if platform == "darwin":
+        if module_kwargs.device == "cuda":
+            raise ValueError(
+                "Cannot use CUDA on macOS. Please set the device to 'cpu' or 'mps'."
+            )
+        if module_kwargs.llm != "mlx-lm":
+            logger.warning(
+                "For macOS users, it is recommended to use mlx-lm. You can activate it by passing --llm mlx-lm."
+            )
+        if module_kwargs.tts != "melo":
+            logger.warning(
+                "If you experiences issues generating the voice, considering setting the tts to melo."
+            )    # 2. Prepare each part's arguments
+    def overwrite_device_argument(common_device: Optional[str], *handler_kwargs):
+        if common_device:
+            for kwargs in handler_kwargs:
+                if hasattr(kwargs, "lm_device"):
+                    kwargs.lm_device = common_device
+                if hasattr(kwargs, "tts_device"):
+                    kwargs.tts_device = common_device
+                if hasattr(kwargs, "stt_device"):
+                    kwargs.stt_device = common_device    # Call this function with the common device and all the handlers
+    overwrite_device_argument(
+        module_kwargs.device,
+        language_model_handler_kwargs,
+        mlx_language_model_handler_kwargs,
+        parler_tts_handler_kwargs,
+        whisper_stt_handler_kwargs,
+    )    prepare_args(whisper_stt_handler_kwargs, "stt")
+    prepare_args(language_model_handler_kwargs, "lm")
+    prepare_args(mlx_language_model_handler_kwargs, "mlx_lm")
+    prepare_args(parler_tts_handler_kwargs, "tts")
+    prepare_args(melo_tts_handler_kwargs, "melo")    # 3. Build the pipeline
+    stop_event = Event()
+    # used to stop putting received audio chunks in queue until all setences have been processed by the TTS
+    should_listen = Event()
+    recv_audio_chunks_queue = Queue()
+    send_audio_chunks_queue = Queue()
+    spoken_prompt_queue = Queue()
+    text_prompt_queue = Queue()
+    lm_response_queue = Queue()    if module_kwargs.mode == "local":
+        local_audio_streamer = LocalAudioStreamer(
+            input_queue=recv_audio_chunks_queue, output_queue=send_audio_chunks_queue
+        )
+        comms_handlers = [local_audio_streamer]
+        should_listen.set()
+    else:
+        comms_handlers = [
+            SocketReceiver(
+                stop_event,
+                recv_audio_chunks_queue,
+                should_listen,
+                host=socket_receiver_kwargs.recv_host,
+                port=socket_receiver_kwargs.recv_port,
+                chunk_size=socket_receiver_kwargs.chunk_size,
+            ),
+            SocketSender(
+                stop_event,
+                send_audio_chunks_queue,
+                host=socket_sender_kwargs.send_host,
+                port=socket_sender_kwargs.send_port,
+            ),
+        ]    vad = VADHandler(
+        stop_event,
+        queue_in=recv_audio_chunks_queue,
+        queue_out=spoken_prompt_queue,
+        setup_args=(should_listen,),
+        setup_kwargs=vars(vad_handler_kwargs),
+    )
+    if module_kwargs.stt == "whisper":
+        stt = WhisperSTTHandler(
+            stop_event,
+            queue_in=spoken_prompt_queue,
+            queue_out=text_prompt_queue,
+            setup_kwargs=vars(whisper_stt_handler_kwargs),
+        )
+    elif module_kwargs.stt == "whisper-mlx":
+        from STT.lightning_whisper_mlx_handler import LightningWhisperSTTHandler
+        stt = LightningWhisperSTTHandler(
+            stop_event,
+            queue_in=spoken_prompt_queue,
+            queue_out=text_prompt_queue,
+            setup_kwargs=vars(whisper_stt_handler_kwargs),
+        )
+    else:
+        raise ValueError("The STT should be either whisper or whisper-mlx")
+    if module_kwargs.llm == "transformers":
+        lm = LanguageModelHandler(
+            stop_event,
+            queue_in=text_prompt_queue,
+            queue_out=lm_response_queue,
+            setup_kwargs=vars(language_model_handler_kwargs),
+        )
+    elif module_kwargs.llm == "mlx-lm":
+        from LLM.mlx_lm import MLXLanguageModelHandler
+        lm = MLXLanguageModelHandler(
+            stop_event,
+            queue_in=text_prompt_queue,
+            queue_out=lm_response_queue,
+            setup_kwargs=vars(mlx_language_model_handler_kwargs),
+        )
+    else:
+        raise ValueError("The LLM should be either transformers or mlx-lm")
+    if module_kwargs.tts == "parler":
+        torch._inductor.config.fx_graph_cache = True
+        # mind about this parameter ! should be >= 2 * number of padded prompt sizes for TTS
+        torch._dynamo.config.cache_size_limit = 15
+        tts = ParlerTTSHandler(
+            stop_event,
+            queue_in=lm_response_queue,
+            queue_out=send_audio_chunks_queue,
+            setup_args=(should_listen,),
+            setup_kwargs=vars(parler_tts_handler_kwargs),
+        )    elif module_kwargs.tts == "melo":
+        try:
+            from TTS.melotts import MeloTTSHandler
+        except RuntimeError as e:
+            logger.error(
+                "Error importing MeloTTSHandler. You might need to run: python -m unidic download"
+            )
+            raise e
+        tts = MeloTTSHandler(
+            stop_event,
+            queue_in=lm_response_queue,
+            queue_out=send_audio_chunks_queue,
+            setup_args=(should_listen,),
+            setup_kwargs=vars(melo_tts_handler_kwargs),
+        )
+    else:
+        raise ValueError("The TTS should be either parler or melo")    # 4. Run the pipeline
+    try:
+        pipeline_manager = ThreadManager([*comms_handlers, vad, stt, lm, tts])
+        pipeline_manager.start()    except KeyboardInterrupt:
+        pipeline_manager.stop()if name == "main":
+    main()# This script is run with python s2s_pipeline.py --recv_host 0.0.0.0 --send_host 0.0.0.0 --play_steps_s 0.5
+</server - s2s_pipeline.ps><client listen_and_play.py>
+import socket
+import threading
+from queue import Queue
+from dataclasses import dataclass, field
+import sounddevice as sd
+from transformers import HfArgumentParser@dataclass
+class ListenAndPlayArguments:
+    send_rate: int = field(default=16000, metadata={"help": "In Hz. Default is 16000."})
+    recv_rate: int = field(default=44100, metadata={"help": "In Hz. Default is 44100."})
+    list_play_chunk_size: int = field(
+        default=1024,
+        metadata={"help": "The size of data chunks (in bytes). Default is 1024."},
+    )
+    host: str = field(
+        default="localhost",
+        metadata={
+            "help": "The hostname or IP address for listening and playing. Default is 'localhost'."
+        },
+    )
+    send_port: int = field(
+        default=12345,
+        metadata={"help": "The network port for sending data. Default is 12345."},
+    )
+    recv_port: int = field(
+        default=12346,
+        metadata={"help": "The network port for receiving data. Default is 12346."},
+    )def listen_and_play(
+    send_rate=16000,
+    recv_rate=44100,
+    list_play_chunk_size=1024,
+    host="localhost",
+    send_port=12345,
+    recv_port=12346,
+):
+    send_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    send_socket.connect((host, send_port))    recv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    recv_socket.connect((host, recv_port))    print("Recording and streaming...")    stop_event = threading.Event()
+    recv_queue = Queue()
+    send_queue = Queue()    def callback_recv(outdata, frames, time, status):
+        if not recv_queue.empty():
+            data = recv_queue.get()
+            outdata[: len(data)] = data
+            outdata[len(data) :] = b"\x00" * (len(outdata) - len(data))
+        else:
+            outdata[:] = b"\x00" * len(outdata)    def callback_send(indata, frames, time, status):
+        if recv_queue.empty():
+            data = bytes(indata)
+            send_queue.put(data)    def send(stop_event, send_queue):
+        while not stop_event.is_set():
+            data = send_queue.get()
+            send_socket.sendall(data)    def recv(stop_event, recv_queue):
+        def receive_full_chunk(conn, chunk_size):
+            data = b""
+            while len(data) < chunk_size:
+                packet = conn.recv(chunk_size - len(data))
+                if not packet:
+                    return None  # Connection has been closed
+                data += packet
+            return data        while not stop_event.is_set():
+            data = receive_full_chunk(recv_socket, list_play_chunk_size * 2)
+            if data:
+                recv_queue.put(data)    try:
+        send_stream = sd.RawInputStream(
+            samplerate=send_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=list_play_chunk_size,
+            callback=callback_send,
+        )
+        recv_stream = sd.RawOutputStream(
+            samplerate=recv_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=list_play_chunk_size,
+            callback=callback_recv,
+        )
+        threading.Thread(target=send_stream.start).start()
+        threading.Thread(target=recv_stream.start).start()        send_thread = threading.Thread(target=send, args=(stop_event, send_queue))
+        send_thread.start()
+        recv_thread = threading.Thread(target=recv, args=(stop_event, recv_queue))
+        recv_thread.start()        input("Press Enter to stop...")    except KeyboardInterrupt:
+        print("Finished streaming.")    finally:
+        stop_event.set()
+        recv_thread.join()
+        send_thread.join()
+        send_socket.close()
+        recv_socket.close()
+        print("Connection closed.")if name == "main":
+    parser = HfArgumentParser((ListenAndPlayArguments,))
+    (listen_and_play_kwargs,) = parser.parse_args_into_dataclasses()
+    listen_and_play(**vars(listen_and_play_kwargs))# This script is run with python listen_and_play.py --host 149.36.1.168 --send_port 42768 --recv_port 47941 --send_rate 16000 --recv_rate 16000, where the host is the server IP address and the send and receive ports are the external ports corresponding to internal ports 12345 and 12346 of the server.
+</client listen_and_play.py>
+</scripts to convert>
+
+
+<clarifying questions>
+UDP Conversion Scope:
+Do you want to maintain the same overall structure and functionality of the scripts, just changing the communication protocol from TCP to UDP? ANSWER: YES, ALTHOUGH MUCH OF THE TCP APPROACH CAN BE SIMPLIFIED FOR UDP AS THERE IS NO NEED FOR SENDING AND RECEIVING SOCKETS, THERE WILL JUST BE ONE PORT.
+Should we keep all the existing features (like VAD, STT, LLM, TTS) intact? ANSWER: YES
+Error Handling:
+UDP doesn't guarantee packet delivery or order. How would you like to handle potential packet loss or out-of-order packets? ANSWER: IMPLEMENT A SIMPLE APPROACH
+Should we implement any form of acknowledgment or sequencing system on top of UDP? ANSWER: NOT UNLESS IT'S SIMPLE AND DOES CHANGE THE USER EXPERIENCE
+Streaming Considerations:
+The current implementation uses streaming for audio. With UDP, we might need to implement our own streaming mechanism. Is this acceptable? ANSWER: IF NEEDED, YES. THE GOAL IS TO HAVE THE SAME CLIENT-SIDE EXPERIENCE (BUT FASTER, AS IT'S UDP) AS FOR TCP.
+Buffer Sizes:
+UDP has a maximum packet size (typically around 65,507 bytes). Should we implement any specific fragmentation and reassembly for larger data? ANSWER: IF NEEDED. AGAIN, AIM TO MAINTAIN THE SAME EXPERIENCE FOR THE CLIENT.
+Connection Management:
+UDP is connectionless. How should we handle the concept of "connections" that's currently present in the TCP version? ANSWER: EVIDENTLY, THIS WILL BE DROPPED AS IT IS NOT NEEDED OR RELEVANT IN UDP.
+Performance Expectations:
+Are there any specific performance improvements you're hoping to achieve by moving to UDP? ANSWER: YES, THE POINT OF USING UDP IS TO REDUCE LATENCY IN SENDING CHUNKS OF DATA SO THAT THE STREAMING IS MORE SMOOTH.
+Platform Compatibility:
+The scripts mention some platform-specific considerations (like macOS). Should the UDP version maintain these considerations? ANSWER: NO, THERE IS NO NEED TO SUPPORT MAC, WE'LL ONLY USE CUDA.
+External Dependencies:
+Should we keep all the external library dependencies the same, or are you open to using UDP-specific libraries if they might be beneficial? ANSWER: TO THE EXTENT UDP REPLACES TCP, ASSOCIATED LIBRARIES SHOULD BE REPLACED.
+</clarifying questions>
+
+Now, kindly provide me with the server and client code - converted for UDP.
