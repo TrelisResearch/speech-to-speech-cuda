@@ -20,9 +20,11 @@
   - [Generation parameters](#generation-parameters)
   - [Notable parameters](#notable-parameters)
 
-## UDP Scripts
->[!IMPORTANT]
->These scripts are not functioning. The standard scripts are recommended.
+## Fork Notes
+This fork makes two primary updates:
+
+1. Updates the dockerfile to include flash attention and hf_transfer. See `docker-commands.md` for details on making the docker image.
+2. Adds scripts to listen and play audio via udp. WARNING: These scripts are not yet functioning. The standard scripts are recommended.
 
 ## Approach
 
